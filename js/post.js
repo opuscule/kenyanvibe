@@ -1,7 +1,60 @@
 const API_BASE = "https://kenyanvibe.com/wp-json/wp/v2/posts";
+const POST_CACHE_PREFIX = "kv_post_cache_v1:";
+const CACHE_TTL_MS = 5 * 60 * 1000;
 
 const statusEl = document.getElementById("status");
 const postEl = document.getElementById("post");
+
+function buildPostUrl(slug) {
+  const params = new URLSearchParams({
+    slug,
+    _embed: "wp:featuredmedia,wp:term",
+    _fields: "id,slug,date,title,content,_embedded",
+  });
+
+  return `${API_BASE}?${params.toString()}`;
+}
+
+function readCache(cacheKey) {
+  try {
+    const rawValue = localStorage.getItem(cacheKey);
+    if (!rawValue) {
+      return null;
+    }
+
+    const parsed = JSON.parse(rawValue);
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      typeof parsed.cachedAt !== "number" ||
+      !parsed.data ||
+      typeof parsed.data !== "object"
+    ) {
+      return null;
+    }
+
+    return parsed;
+  } catch (error) {
+    return null;
+  }
+}
+
+function writeCache(cacheKey, data) {
+  try {
+    const payload = {
+      cachedAt: Date.now(),
+      data,
+    };
+
+    localStorage.setItem(cacheKey, JSON.stringify(payload));
+  } catch (error) {
+    // Ignore storage errors and keep runtime behavior unaffected.
+  }
+}
+
+function isCacheFresh(cacheEntry) {
+  return Date.now() - cacheEntry.cachedAt <= CACHE_TTL_MS;
+}
 
 function formatDate(isoDate) {
   const parsed = new Date(isoDate);
@@ -125,6 +178,8 @@ function renderPost(post) {
     featuredImage.src = featuredImageUrl;
     featuredImage.alt = getFeaturedImageAlt(post);
     featuredImage.width = 220;
+    featuredImage.loading = "lazy";
+    featuredImage.decoding = "async";
     postEl.appendChild(featuredImage);
   }
   if (categories.length > 0) {
@@ -135,6 +190,22 @@ function renderPost(post) {
   postEl.appendChild(content);
 }
 
+async function fetchPostFromApi(slug) {
+  const response = await fetch(buildPostUrl(slug));
+
+  if (!response.ok) {
+    throw new Error(`Request failed with status ${response.status}`);
+  }
+
+  const posts = await response.json();
+
+  if (!Array.isArray(posts)) {
+    throw new Error("Unexpected response shape");
+  }
+
+  return posts;
+}
+
 async function loadPost() {
   const slug = getSlugFromPath();
 
@@ -143,30 +214,42 @@ async function loadPost() {
     return;
   }
 
-  try {
-    const response = await fetch(
-      `${API_BASE}?slug=${encodeURIComponent(slug)}&_embed`
+  const cacheKey = `${POST_CACHE_PREFIX}${slug}`;
+  const cached = readCache(cacheKey);
+  const hasFreshCache = cached && isCacheFresh(cached);
+
+  if (hasFreshCache) {
+    renderPost(cached.data);
+    statusEl.textContent = "";
+
+    const cachedTitle = (cached.data.title?.rendered || "Post").replace(
+      /<[^>]*>/g,
+      ""
     );
+    document.title = cachedTitle;
+  }
 
-    if (!response.ok) {
-      throw new Error(`Request failed with status ${response.status}`);
-    }
-
-    const posts = await response.json();
+  try {
+    const posts = await fetchPostFromApi(slug);
 
     if (!Array.isArray(posts) || posts.length === 0) {
-      statusEl.textContent = "Post not found.";
+      if (!hasFreshCache) {
+        statusEl.textContent = "Post not found.";
+      }
       return;
     }
 
     const post = posts[0];
+    writeCache(cacheKey, post);
     renderPost(post);
     statusEl.textContent = "";
 
     const plainTitle = (post.title?.rendered || "Post").replace(/<[^>]*>/g, "");
     document.title = plainTitle;
   } catch (error) {
-    statusEl.textContent = "Could not load this post right now.";
+    if (!hasFreshCache) {
+      statusEl.textContent = "Could not load this post right now.";
+    }
   }
 }
 

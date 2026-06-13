@@ -1,7 +1,59 @@
-const POSTS_ENDPOINT = "https://kenyanvibe.com/wp-json/wp/v2/posts?per_page=5&_embed";
+const API_BASE = "https://kenyanvibe.com/wp-json/wp/v2/posts";
+const HOME_CACHE_KEY = "kv_home_posts_cache_v1";
+const CACHE_TTL_MS = 5 * 60 * 1000;
 
 const statusEl = document.getElementById("status");
 const postListEl = document.getElementById("post-list");
+
+function buildPostsUrl() {
+  const params = new URLSearchParams({
+    per_page: "5",
+    _embed: "wp:featuredmedia,wp:term",
+    _fields: "id,slug,date,title,excerpt,_embedded",
+  });
+
+  return `${API_BASE}?${params.toString()}`;
+}
+
+function readCache(cacheKey) {
+  try {
+    const rawValue = localStorage.getItem(cacheKey);
+    if (!rawValue) {
+      return null;
+    }
+
+    const parsed = JSON.parse(rawValue);
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      typeof parsed.cachedAt !== "number" ||
+      !Array.isArray(parsed.data)
+    ) {
+      return null;
+    }
+
+    return parsed;
+  } catch (error) {
+    return null;
+  }
+}
+
+function writeCache(cacheKey, data) {
+  try {
+    const payload = {
+      cachedAt: Date.now(),
+      data,
+    };
+
+    localStorage.setItem(cacheKey, JSON.stringify(payload));
+  } catch (error) {
+    // Ignore storage errors and keep runtime behavior unaffected.
+  }
+}
+
+function isCacheFresh(cacheEntry) {
+  return Date.now() - cacheEntry.cachedAt <= CACHE_TTL_MS;
+}
 
 function formatDate(isoDate) {
   const parsed = new Date(isoDate);
@@ -114,6 +166,8 @@ function renderPosts(posts) {
       featuredImage.src = featuredImageUrl;
       featuredImage.alt = getFeaturedImageAlt(post);
       featuredImage.width = 180;
+      featuredImage.loading = "lazy";
+      featuredImage.decoding = "async";
       item.appendChild(featuredImage);
     }
     if (categories.length > 0) {
@@ -127,25 +181,48 @@ function renderPosts(posts) {
   }
 }
 
+async function fetchPostsFromApi() {
+  const response = await fetch(buildPostsUrl());
+
+  if (!response.ok) {
+    throw new Error(`Request failed with status ${response.status}`);
+  }
+
+  const posts = await response.json();
+
+  if (!Array.isArray(posts)) {
+    throw new Error("Unexpected response shape");
+  }
+
+  return posts;
+}
+
 async function loadPosts() {
+  const cached = readCache(HOME_CACHE_KEY);
+  const hasFreshCache = cached && isCacheFresh(cached) && cached.data.length > 0;
+
+  if (hasFreshCache) {
+    renderPosts(cached.data);
+    statusEl.textContent = "";
+  }
+
   try {
-    const response = await fetch(POSTS_ENDPOINT);
-
-    if (!response.ok) {
-      throw new Error(`Request failed with status ${response.status}`);
-    }
-
-    const posts = await response.json();
+    const posts = await fetchPostsFromApi();
 
     if (!Array.isArray(posts) || posts.length === 0) {
-      statusEl.textContent = "No posts found.";
+      if (!hasFreshCache) {
+        statusEl.textContent = "No posts found.";
+      }
       return;
     }
 
+    writeCache(HOME_CACHE_KEY, posts);
     renderPosts(posts);
     statusEl.textContent = "";
   } catch (error) {
-    statusEl.textContent = "Could not load posts right now.";
+    if (!hasFreshCache) {
+      statusEl.textContent = "Could not load posts right now.";
+    }
   }
 }
 
