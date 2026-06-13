@@ -17,6 +17,72 @@ function formatDate(isoDate) {
   });
 }
 
+function getFeaturedImageUrl(post) {
+  const media = post?._embedded?.["wp:featuredmedia"]?.[0];
+
+  if (!media) {
+    return "";
+  }
+
+  return (
+    media.media_details?.sizes?.thumbnail?.source_url ||
+    media.source_url ||
+    ""
+  );
+}
+
+function getFeaturedImageAlt(post) {
+  const media = post?._embedded?.["wp:featuredmedia"]?.[0];
+
+  if (!media) {
+    return "";
+  }
+
+  return media.alt_text || media.title?.rendered || "";
+}
+
+function getCategoryNames(post) {
+  const terms = post?._embedded?.["wp:term"];
+
+  if (!Array.isArray(terms)) {
+    return [];
+  }
+
+  const categories = [];
+
+  for (const group of terms) {
+    if (!Array.isArray(group)) {
+      continue;
+    }
+
+    for (const term of group) {
+      if (term?.taxonomy === "category" && term?.name) {
+        categories.push(term.name);
+      }
+    }
+  }
+
+  return categories;
+}
+
+function normalizeWordPressLazyImages(container) {
+  const images = container.querySelectorAll("img");
+
+  for (const image of images) {
+    const src = image.getAttribute("src") || "";
+    const dataSrc = image.getAttribute("data-src") || "";
+    const dataSrcset = image.getAttribute("data-srcset") || "";
+
+    if (src.startsWith("data:image/gif;base64") && dataSrc) {
+      image.setAttribute("src", dataSrc);
+    }
+
+    if (!image.getAttribute("srcset") && dataSrcset) {
+      image.setAttribute("srcset", dataSrcset);
+    }
+  }
+}
+
 function getSlugFromPath() {
   const segments = window.location.pathname.split("/").filter(Boolean);
 
@@ -43,12 +109,28 @@ function renderPost(post) {
   const date = document.createElement("p");
   date.textContent = formatDate(post.date);
 
+  const featuredImageUrl = getFeaturedImageUrl(post);
+  const categories = getCategoryNames(post);
+
   const content = document.createElement("div");
   content.innerHTML = post.content?.rendered || "";
+  normalizeWordPressLazyImages(content);
 
   postEl.appendChild(title);
   if (date.textContent) {
     postEl.appendChild(date);
+  }
+  if (featuredImageUrl) {
+    const featuredImage = document.createElement("img");
+    featuredImage.src = featuredImageUrl;
+    featuredImage.alt = getFeaturedImageAlt(post);
+    featuredImage.width = 220;
+    postEl.appendChild(featuredImage);
+  }
+  if (categories.length > 0) {
+    const categoryText = document.createElement("p");
+    categoryText.textContent = `Categories: ${categories.join(", ")}`;
+    postEl.appendChild(categoryText);
   }
   postEl.appendChild(content);
 }
@@ -62,7 +144,9 @@ async function loadPost() {
   }
 
   try {
-    const response = await fetch(`${API_BASE}?slug=${encodeURIComponent(slug)}`);
+    const response = await fetch(
+      `${API_BASE}?slug=${encodeURIComponent(slug)}&_embed`
+    );
 
     if (!response.ok) {
       throw new Error(`Request failed with status ${response.status}`);
